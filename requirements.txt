@@ -1,6 +1,7 @@
+streamlit
 numpy
 pandas
 yfinance
-scipy
-streamlit
 plotly
+scipy
+openpyxl
