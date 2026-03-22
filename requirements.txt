@@ -1,7 +1,8 @@
-streamlit
+streamlit>=1.23
 numpy
 pandas
 yfinance
 plotly
 scipy
 openpyxl
+altair<5
