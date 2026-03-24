@@ -243,43 +243,13 @@ class CarteiraMarkowitz:
         return self.estatisticas_carteira(resultado.x, taxa_livre_risco)
 
     def fronteira_eficiente(self, n_pontos=50, permitir_short=False, peso_maximo=1.0,
-                            mapa_setor=None, limite_setor=None, taxa_livre_risco=0.0,
-                            *args, **kwargs):
-        # Compatibilidade extra: se alguma versão antiga chamar com argumentos
-        # posicionais/nominais diferentes, preserva a execução.
-        if "taxa_livre_risco" in kwargs and kwargs["taxa_livre_risco"] is not None:
-            taxa_livre_risco = kwargs["taxa_livre_risco"]
-        if "mapa_setor" in kwargs and kwargs["mapa_setor"] is not None:
-            mapa_setor = kwargs["mapa_setor"]
-        if "limite_setor" in kwargs and kwargs["limite_setor"] is not None:
-            limite_setor = kwargs["limite_setor"]
-
-        min_var = self.otimizar_minima_variancia(
-            taxa_livre_risco=taxa_livre_risco,
-            permitir_short=permitir_short,
-            peso_maximo=peso_maximo,
-            mapa_setor=mapa_setor,
-            limite_setor=limite_setor,
-        )
-        max_ret = self.otimizar_max_retorno(
-            taxa_livre_risco=taxa_livre_risco,
-            permitir_short=permitir_short,
-            peso_maximo=peso_maximo,
-            mapa_setor=mapa_setor,
-            limite_setor=limite_setor,
-        )
-
-        retorno_min = float(min_var["retorno_anual"])
-        retorno_max = float(max_ret["retorno_anual"])
-        if retorno_max <= retorno_min + 1e-10:
-            retorno_max = retorno_min + 1e-6
-
-        retornos_alvo = np.linspace(retorno_min, retorno_max, n_pontos)
+                            mapa_setor=None, limite_setor=None):
+        retornos_alvo = np.linspace(self.retorno_medio_anual.min(), self.retorno_medio_anual.max(), n_pontos)
         n = len(self.nomes_ativos)
-        x0 = np.array(min_var["pesos"], dtype=float)
+        x0 = np.array([1 / n] * n)
         bounds = None if permitir_short else tuple((0, peso_maximo) for _ in range(n))
 
-        resultados = []
+        riscos, vols, rets = [], [], []
 
         for retorno_alvo in retornos_alvo:
             constraints = self._montar_restricoes(
@@ -293,21 +263,16 @@ class CarteiraMarkowitz:
                 x0=x0,
                 method="SLSQP",
                 bounds=bounds,
-                constraints=constraints,
-                options={"maxiter": 500}
+                constraints=constraints
             )
 
             if resultado.success:
-                stats = self.estatisticas_carteira(resultado.x, taxa_livre_risco)
-                resultados.append({
-                    "risco": stats["risco_anual"],
-                    "volatilidade": stats["volatilidade_anual"],
-                    "retorno": stats["retorno_anual"],
-                    "sharpe": stats["sharpe"]
-                })
-                x0 = np.array(resultado.x, dtype=float)
+                vol = np.sqrt(np.dot(resultado.x.T, np.dot(self.cov_anual.values, resultado.x)))
+                vols.append(vol)
+                riscos.append(vol)
+                rets.append(retorno_alvo)
 
-        return pd.DataFrame(resultados).drop_duplicates(subset=["risco", "retorno"]).sort_values("risco")
+        return pd.DataFrame({"risco": riscos, "volatilidade": vols, "retorno": rets})
 
     def gerar_carteiras_aleatorias(self, numero_carteiras=3000, taxa_livre_risco=0.0,
                                    mapa_setor=None, limite_setor=None):
@@ -440,6 +405,39 @@ def gerar_resumo_textual(df_recomendacao, exposicao_atual, exposicao_recomendada
     return mensagens
 
 
+def gerar_comparativo_carteira(pesos_atuais, pesos_recomendados, ativos):
+    df = pd.DataFrame({
+        "ativo": ativos,
+        "peso_atual": np.array(pesos_atuais, dtype=float),
+        "peso_recomendado": np.array(pesos_recomendados, dtype=float)
+    })
+    df["delta"] = df["peso_recomendado"] - df["peso_atual"]
+    df["mudança"] = np.where(
+        df["delta"] > 0.005,
+        "Aumentar",
+        np.where(df["delta"] < -0.005, "Reduzir", "Manter")
+    )
+    return df.sort_values("peso_recomendado", ascending=False).reset_index(drop=True)
+
+
+def montar_pizza_ativos(df_base, coluna_valor, titulo):
+    df_plot = df_base[["ativo", coluna_valor]].copy()
+    df_plot = df_plot[df_plot[coluna_valor] > 0].sort_values(coluna_valor, ascending=False)
+    if df_plot.empty:
+        return go.Figure()
+
+    fig = px.pie(
+        df_plot,
+        names="ativo",
+        values=coluna_valor,
+        title=titulo,
+        hole=0.25
+    )
+    fig.update_traces(textposition="inside", textinfo="percent+label")
+    fig.update_layout(template="plotly_white")
+    return fig
+
+
 st.set_page_config(page_title="Otimizador Markowitz + Setorial", layout="wide")
 st.title("Otimizador de Carteira: Markowitz + Concentração Setorial")
 st.caption("Combina análise quantitativa de risco/retorno com limites de concentração por setor.")
@@ -565,7 +563,7 @@ if st.session_state.dados_calculados:
     st.plotly_chart(fig_corr, use_container_width=True)
 
     st.subheader("Pesos da sua carteira")
-    st.caption("Preencha os pesos da carteira atual do investidor. A soma precisa ser 100%. Se quiser, use o botão para normalizar automaticamente.")
+    st.caption("Preencha os pesos da carteira atual do investidor. A soma precisa ser 100%.")
     cols = st.columns(min(n, 6))
     pesos_usuario = []
 
@@ -585,13 +583,7 @@ if st.session_state.dados_calculados:
             pesos_usuario.append(p)
 
     soma = sum(pesos_usuario)
-    csum1, csum2 = st.columns([1, 1])
-    csum1.write(f"Soma dos pesos: {soma:.4f}")
-    if csum2.button("Normalizar pesos automaticamente"):
-        if soma > 0:
-            for ativo, p in zip(ativos, pesos_usuario):
-                st.session_state[f"peso_{ativo}"] = float(p / soma)
-            st.rerun()
+    st.write(f"Soma dos pesos: {soma:.4f}")
 
     stats_usuario = None
     exposicao_setorial_atual = None
@@ -679,14 +671,7 @@ if st.session_state.dados_calculados:
         )
 
     st.subheader("Fronteira eficiente")
-    fronteira = carteira.fronteira_eficiente(
-        n_pontos=50,
-        permitir_short=permitir_short,
-        peso_maximo=peso_maximo,
-        mapa_setor=mapa_setor_otimizacao,
-        limite_setor=limite_setor_otimizacao,
-        taxa_livre_risco=taxa_livre_risco,
-    )
+    fronteira = carteira.fronteira_eficiente(50, permitir_short, peso_maximo, mapa_setor_otimizacao, limite_setor_otimizacao)
     aleatorias = carteira.gerar_carteiras_aleatorias(
         numero_carteiras, taxa_livre_risco, mapa_setor_otimizacao, limite_setor_otimizacao
     )
@@ -702,15 +687,12 @@ if st.session_state.dados_calculados:
             name="Carteiras aleatórias"
         ))
 
-    if not fronteira.empty:
-        fig.add_trace(go.Scatter(
-            x=fronteira["risco"],
-            y=fronteira["retorno"],
-            mode="lines",
-            name="Fronteira eficiente"
-        ))
-    else:
-        st.warning("Não foi possível traçar a fronteira eficiente completa com as restrições atuais. O gráfico abaixo mostra as carteiras viáveis encontradas e os pontos ótimos.")
+    fig.add_trace(go.Scatter(
+        x=fronteira["risco"],
+        y=fronteira["retorno"],
+        mode="lines",
+        name="Fronteira eficiente"
+    ))
 
     fig.add_trace(go.Scatter(
         x=[min_var["risco_anual"]],
@@ -754,24 +736,9 @@ if st.session_state.dados_calculados:
 
     st.plotly_chart(fig, use_container_width=True)
 
-    st.subheader("Carteira final recomendada")
-    st.caption("Esta é a carteira de maior Sharpe dentro das restrições definidas. Se a restrição setorial estiver ligada, ela respeita o limite máximo por setor.")
-
-    pesos_finais_df = carteira.mostrar_pesos(max_sharpe["pesos"]).to_frame("peso_recomendado")
-    st.dataframe(
-        pesos_finais_df.style.format({"peso_recomendado": "{:.2%}"}),
-        use_container_width=True
-    )
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Retorno esperado", pct(max_sharpe["retorno_anual"]))
-    c2.metric("Volatilidade esperada", pct(max_sharpe["volatilidade_anual"]))
-    c3.metric("Sharpe esperado", f'{max_sharpe["sharpe"]:.4f}')
-    c4.metric("Maior peso individual", pct(np.max(max_sharpe["pesos"])))
-
     if stats_usuario is not None:
         st.subheader("Recomendação de realocação")
-        st.caption("A recomendação abaixo compara a carteira atual com a carteira final recomendada de maior Sharpe.")
+        st.caption("A recomendação abaixo usa a carteira de maior Sharpe como referência e, quando habilitado, respeita o limite por setor.")
 
         recomendacao_df = gerar_tabela_recomendacao(
             carteira=carteira,
@@ -779,7 +746,46 @@ if st.session_state.dados_calculados:
             pesos_recomendados=max_sharpe["pesos"],
             classificacao_df=classificacao_df if classificacao_df is not None else pd.DataFrame(columns=["CODIGO", "SETOR", "SUBSETOR"])
         )
+        comparativo_carteira = gerar_comparativo_carteira(
+            pesos_atuais=stats_usuario["pesos"],
+            pesos_recomendados=max_sharpe["pesos"],
+            ativos=ativos
+        )
 
+        st.markdown("### Comparação: carteira atual x carteira recomendada")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Sharpe atual", f'{stats_usuario["sharpe"]:.4f}')
+        c2.metric("Sharpe recomendado", f'{max_sharpe["sharpe"]:.4f}', delta=f'{(max_sharpe["sharpe"] - stats_usuario["sharpe"]):+.4f}')
+        c3.metric("Ganho esperado de retorno", pct(max_sharpe["retorno_anual"] - stats_usuario["retorno_anual"]))
+
+        c4, c5, c6 = st.columns(3)
+        c4.metric("Risco atual", pct(stats_usuario["risco_anual"]))
+        c5.metric("Risco recomendado", pct(max_sharpe["risco_anual"]), delta=pct(max_sharpe["risco_anual"] - stats_usuario["risco_anual"]))
+        c6.metric("Retorno recomendado", pct(max_sharpe["retorno_anual"]), delta=pct(max_sharpe["retorno_anual"] - stats_usuario["retorno_anual"]))
+
+        st.dataframe(
+            comparativo_carteira.style.format({
+                "peso_atual": "{:.2%}",
+                "peso_recomendado": "{:.2%}",
+                "delta": "{:+.2%}"
+            }),
+            use_container_width=True
+        )
+
+        st.markdown("### Alocação por ativo")
+        pizza1, pizza2 = st.columns(2)
+        with pizza1:
+            st.plotly_chart(
+                montar_pizza_ativos(comparativo_carteira, "peso_atual", "Carteira atual por ativo"),
+                use_container_width=True
+            )
+        with pizza2:
+            st.plotly_chart(
+                montar_pizza_ativos(comparativo_carteira, "peso_recomendado", "Carteira recomendada por ativo"),
+                use_container_width=True
+            )
+
+        st.markdown("### Ajustes sugeridos por ativo")
         st.dataframe(
             recomendacao_df.style.format({
                 "sharpe": "{:.4f}",
