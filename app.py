@@ -28,8 +28,8 @@ from scipy.optimize import minimize
 # CONSTANTES — REGRAS DA CASA (não editáveis pelo cliente)
 # ============================================================
 TRADING_DAYS = 252
-LIMITE_POR_ATIVO = 0.20          # 20% máximo por ativo
-LIMITE_POR_SETOR = 0.35          # 35% máximo por setor
+LIMITE_POR_ATIVO = 0.17          # 17% máximo por ativo
+LIMITE_POR_SETOR = 0.33          # 33% máximo por setor
 ANOS_HISTORICO = 10              # histórico fixo de 10 anos
 TAXA_RF_PADRAO = 0.105           # fallback se admin ainda não cadastrou
 ARQUIVO_SETOR_PADRAO = "ClassifSetorial.xlsx"
