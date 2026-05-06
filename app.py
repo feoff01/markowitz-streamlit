@@ -942,6 +942,15 @@ if st.session_state.carteira_calculada:
     pesos_cliente = []
     peso_default = round(1 / n, 4)
 
+    # Se o botão "Equalizar" foi clicado no rerun anterior, agora sim podemos
+    # alterar as chaves dos widgets (porque eles ainda não foram instanciados
+    # nesta execução). Streamlit proíbe alterar a chave depois que o widget
+    # com aquela key já foi criado no mesmo run.
+    if st.session_state.get("__equalizar_pesos__"):
+        for ativo in ativos_cliente_validos:
+            st.session_state[f"peso_v2_{ativo}"] = peso_default
+        st.session_state["__equalizar_pesos__"] = False
+
     for i, ativo in enumerate(ativos_cliente_validos):
         chave = f"peso_v2_{ativo}"
         if chave not in st.session_state:
@@ -965,8 +974,9 @@ if st.session_state.carteira_calculada:
             st.warning(f"⚠️ Soma atual: **{soma:.2%}** — ajuste para chegar a **100%**.")
     with col_soma2:
         if st.button("⚖️ Equalizar pesos", help="Distribui igualmente"):
-            for ativo in ativos_cliente_validos:
-                st.session_state[f"peso_v2_{ativo}"] = round(1 / n, 4)
+            # Não escreve diretamente nas keys dos widgets aqui — apenas marca
+            # a intenção. A escrita acontece no topo da próxima execução.
+            st.session_state["__equalizar_pesos__"] = True
             st.rerun()
 
     if not np.isclose(soma, 1.0, atol=1e-3):
